@@ -1,93 +1,139 @@
-import chromadb
-from chromadb.api.types import EmbeddingFunction, Documents, Embeddings
+import os
+from qdrant_client import QdrantClient
+from qdrant_client.models import Distance, VectorParams, PointStruct, Filter, FieldCondition, MatchValue
 from fastembed import TextEmbedding
 from loguru import logger
-from typing import Optional
+from typing import Optional, List
 import hashlib
+import uuid
 
-
-class FastEmbedFunction(EmbeddingFunction):
-    """Custom embedding function compatible with ChromaDB."""
+class FastEmbedFunction:
+    """Local embedding function using fastembed."""
 
     def __init__(self, model_name: str = "sentence-transformers/all-MiniLM-L6-v2"):
         self.model = TextEmbedding(model_name=model_name)
 
-    def __call__(self, input: Documents) -> Embeddings:
-        embeddings = list(self.model.embed(input))
+    def embed(self, texts: List[str]) -> List[List[float]]:
+        embeddings = list(self.model.embed(texts))
         return [emb.tolist() for emb in embeddings]
-
-    @staticmethod
-    def name() -> str:
-        return "fastembed-all-MiniLM-L6-v2"
 
 
 class SemanticCache:
-    """Semantic cache using ChromaDB + fastembed with cosine distance."""
+    """Semantic cache using Qdrant Cloud + fastembed."""
 
     def __init__(self, collection_name: str = "llm_cache", threshold: float = 0.5):
         self.threshold = threshold
         self.collection_name = collection_name
 
         self.embedding_fn = FastEmbedFunction()
+        self.vector_size = 384  # all-MiniLM-L6-v2 dimension
 
-        self.client = chromadb.PersistentClient(path="./data/chromadb")
+        # Connect to Qdrant Cloud
+        qdrant_url = os.getenv("QDRANT_URL")
+        qdrant_api_key = os.getenv("QDRANT_API_KEY")
 
-        self.collection = self.client.get_or_create_collection(
-            name=collection_name,
-            embedding_function=self.embedding_fn,
-            metadata={"hnsw:space": "cosine"}
+        if not qdrant_url or not qdrant_api_key:
+            raise ValueError("QDRANT_URL and QDRANT_API_KEY must be set")
+
+        self.client = QdrantClient(
+            url=qdrant_url,
+            api_key=qdrant_api_key,
         )
-        logger.info(f"Cache ready: {self.collection.count()} entries")
+
+        # Create collection if it does not exist
+        self._ensure_collection()
+        logger.info(f"Qdrant cache ready (collection: {collection_name})")
+
+    def _ensure_collection(self):
+        """Create the collection if it does not exist."""
+        collections = self.client.get_collections().collections
+        exists = any(c.name == self.collection_name for c in collections)
+
+        if not exists:
+            self.client.create_collection(
+                collection_name=self.collection_name,
+                vectors_config=VectorParams(
+                    size=self.vector_size,
+                    distance=Distance.COSINE
+                ),
+            )
+            logger.info(f"Created Qdrant collection: {self.collection_name}")
+        else:
+            logger.info(f"Qdrant collection already exists: {self.collection_name}")
 
     def check(self, query: str, tenant_id: str) -> Optional[dict]:
         """Return cached response if a similar query exists."""
-        if self.collection.count() == 0:
+        try:
+            query_vector = self.embedding_fn.embed([query])[0]
+
+            results = self.client.search(
+                collection_name=self.collection_name,
+                query_vector=query_vector,
+                query_filter=Filter(
+                    must=[
+                        FieldCondition(
+                            key="tenant_id",
+                            match=MatchValue(value=tenant_id)
+                        )
+                    ]
+                ),
+                limit=1,
+                score_threshold=None,
+            )
+
+            if not results:
+                logger.info("CACHE MISS (no entries for tenant)")
+                return None
+
+            hit = results[0]
+            distance = 1.0 - hit.score  # Qdrant returns similarity; convert to cosine distance
+
+            if distance <= self.threshold:
+                logger.info(f"CACHE HIT (distance={distance:.3f})")
+                return {
+                    "response": hit.payload["response"],
+                    "distance": distance,
+                    "cached_query": hit.payload["query"]
+                }
+
+            logger.info(f"CACHE MISS (closest distance={distance:.3f})")
             return None
 
-        try:
-            results = self.collection.query(
-                query_texts=[query],
-                n_results=1,
-                where={"tenant_id": tenant_id}
-            )
         except Exception as e:
             logger.error(f"Cache query failed: {e}")
             return None
 
-        if not results["ids"] or not results["ids"][0]:
-            return None
-
-        distance = results["distances"][0][0]
-        if distance <= self.threshold:
-            logger.info(f"CACHE HIT (distance={distance:.3f})")
-            return {
-                "response": results["metadatas"][0][0]["response"],
-                "distance": distance,
-                "cached_query": results["documents"][0][0]
-            }
-
-        logger.info(f"CACHE MISS (closest distance={distance:.3f})")
-        return None
-
     def store(self, query: str, response: str, tenant_id: str):
         """Store a query and its response."""
-        entry_id = hashlib.md5(f"{tenant_id}:{query}".encode()).hexdigest()
-
         try:
-            self.collection.add(
-                ids=[entry_id],
-                documents=[query],
-                metadatas=[{
-                    "response": response,
-                    "tenant_id": tenant_id,
-                }]
+            entry_id = hashlib.md5(f"{tenant_id}:{query}".encode()).hexdigest()
+            point_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, entry_id))
+
+            vector = self.embedding_fn.embed([query])[0]
+
+            self.client.upsert(
+                collection_name=self.collection_name,
+                points=[
+                    PointStruct(
+                        id=point_id,
+                        vector=vector,
+                        payload={
+                            "query": query,
+                            "response": response,
+                            "tenant_id": tenant_id,
+                        }
+                    )
+                ]
             )
-            logger.info(f"Stored in cache (tenant={tenant_id}, total={self.collection.count()})")
+            logger.info(f"Stored in Qdrant (tenant={tenant_id})")
+
         except Exception as e:
             logger.error(f"Cache store failed: {e}")
 
     def count(self) -> int:
+        """Return total entries in the collection."""
         try:
-            return self.collection.count()
+            info = self.client.get_collection(self.collection_name)
+            return info.points_count or 0
         except Exception:
             return 0
