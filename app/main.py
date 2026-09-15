@@ -18,7 +18,7 @@ usage = UsageTracker()
 async def root():
     return {
         "service": "Semantic Cache Proxy",
-        "version": "0.3.0",
+        "version": "0.4.0",
         "cache_entries": cache.count(),
         "status": "running"
     }
@@ -35,19 +35,14 @@ async def stats(authorization: Optional[str] = Header(None)):
         raise HTTPException(status_code=401, detail="Invalid API key")
     return usage.get_stats(tenant_id)
 
-@app.get("/admin/stats")
-async def admin_stats(authorization: Optional[str] = Header(None)):
-    api_key = _extract_key(authorization)
-    if api_key != "admin_key_change_me":
-        raise HTTPException(status_code=403, detail="Admin access required")
-    return usage.get_all_stats()
-
 @app.post("/v1/chat/completions")
 async def chat_completions(
     request: Request,
-    authorization: Optional[str] = Header(None)
+    authorization: Optional[str] = Header(None),
+    x_upstream_key: Optional[str] = Header(None, alias="X-Upstream-Key")
 ):
     try:
+        # 1. Auth against our service
         api_key = _extract_key(authorization)
         tenant_id = auth.validate(api_key)
         if not tenant_id:
@@ -63,8 +58,9 @@ async def chat_completions(
             raise HTTPException(status_code=400, detail="No user message found")
 
         query = user_messages[-1]["content"]
-        logger.info(f"Request: model={body.get('model')} tenant={tenant_id}")
+        logger.info(f"Request: model={body.get('model')} tenant={tenant_id} byok={x_upstream_key is not None}")
 
+        # 2. Cache check
         cached = cache.check(query, tenant_id)
         if cached:
             usage.record_hit(tenant_id)
@@ -86,13 +82,23 @@ async def chat_completions(
                 headers={
                     "X-Cache": "HIT",
                     "X-Cache-Distance": f"{cached['distance']:.3f}",
-                    "X-Tenant": tenant_id
+                    "X-Tenant": tenant_id,
+                    "X-BYOK": "true" if x_upstream_key else "false"
                 }
             )
 
-        response = await router.route(body)
+        # 3. Cache miss — need upstream key
+        if not x_upstream_key:
+            raise HTTPException(
+                status_code=402,
+                detail="Cache miss. Provide your own LLM key in 'X-Upstream-Key' header, or use our managed key."
+            )
+
+        # 4. Call provider with customer's key
+        response = await router.route(body, upstream_key=x_upstream_key)
         usage.record_miss(tenant_id)
 
+        # 5. Store in cache
         try:
             assistant_message = response["choices"][0]["message"]["content"]
             cache.store(query, assistant_message, tenant_id)
@@ -101,7 +107,11 @@ async def chat_completions(
 
         return JSONResponse(
             content=response,
-            headers={"X-Cache": "MISS", "X-Tenant": tenant_id}
+            headers={
+                "X-Cache": "MISS",
+                "X-Tenant": tenant_id,
+                "X-BYOK": "true"
+            }
         )
 
     except HTTPException:

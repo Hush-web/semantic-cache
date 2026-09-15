@@ -1,3 +1,4 @@
+from typing import Optional
 from loguru import logger
 from .providers.groq_provider import GroqProvider
 from .providers.openai_provider import OpenAIProvider
@@ -15,7 +16,7 @@ class ProviderRouter:
     def pick_provider(self, model: str) -> str:
         model_lower = model.lower()
 
-        if any(x in model_lower for x in ["llama", "mixtral", "gemma", "qwen"]):
+        if any(x in model_lower for x in ["llama", "mixtral", "gemma", "qwen", "groq/"]):
             return "groq"
         if any(x in model_lower for x in ["gpt", "o1", "o3"]):
             return "openai"
@@ -23,7 +24,11 @@ class ProviderRouter:
         logger.warning(f"Unknown model '{model}', using default: {settings.DEFAULT_PROVIDER}")
         return settings.DEFAULT_PROVIDER
 
-    async def route(self, request: dict) -> dict:
+    async def route(
+        self,
+        request: dict,
+        upstream_key: Optional[str] = None
+    ) -> dict:
         model = request.get("model", "")
         provider_name = self.pick_provider(model)
         provider = self.providers.get(provider_name)
@@ -31,5 +36,5 @@ class ProviderRouter:
         if not provider:
             raise ValueError(f"Provider '{provider_name}' not configured")
 
-        logger.info(f"Routing model={model} -> provider={provider_name}")
-        return await provider.chat_completion(request)
+        logger.info(f"Routing model={model} -> provider={provider_name} (BYOK={upstream_key is not None})")
+        return await provider.chat_completion(request, upstream_key=upstream_key)
