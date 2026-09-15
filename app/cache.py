@@ -7,6 +7,7 @@ from qdrant_client.models import (
     Filter,
     FieldCondition,
     MatchValue,
+    PayloadSchemaType,
 )
 from fastembed import TextEmbedding
 from loguru import logger
@@ -34,7 +35,7 @@ class SemanticCache:
         self.collection_name = collection_name
 
         self.embedding_fn = FastEmbedFunction()
-        self.vector_size = 384  # all-MiniLM-L6-v2 dimension
+        self.vector_size = 384
 
         qdrant_url = os.getenv("QDRANT_URL")
         qdrant_api_key = os.getenv("QDRANT_API_KEY")
@@ -51,7 +52,7 @@ class SemanticCache:
         logger.info(f"Qdrant cache ready (collection: {collection_name})")
 
     def _ensure_collection(self):
-        """Create the collection if it does not exist."""
+        """Create the collection and payload index if they do not exist."""
         collections = self.client.get_collections().collections
         exists = any(c.name == self.collection_name for c in collections)
 
@@ -66,6 +67,16 @@ class SemanticCache:
             logger.info(f"Created Qdrant collection: {self.collection_name}")
         else:
             logger.info(f"Qdrant collection already exists: {self.collection_name}")
+
+        try:
+            self.client.create_payload_index(
+                collection_name=self.collection_name,
+                field_name="tenant_id",
+                field_schema=PayloadSchemaType.KEYWORD,
+            )
+            logger.info("Payload index on 'tenant_id' is ready")
+        except Exception as e:
+            logger.info(f"Payload index already exists or could not be created: {e}")
 
     def check(self, query: str, tenant_id: str) -> Optional[dict]:
         """Return cached response if a similar query exists."""
@@ -91,8 +102,6 @@ class SemanticCache:
                 return None
 
             hit = results[0]
-            # Qdrant cosine score: higher = more similar.
-            # Convert to cosine distance: lower = more similar.
             distance = 1.0 - hit.score
 
             if distance <= self.threshold:
