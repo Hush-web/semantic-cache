@@ -1,11 +1,19 @@
 import os
 from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, VectorParams, PointStruct, Filter, FieldCondition, MatchValue
+from qdrant_client.models import (
+    Distance,
+    VectorParams,
+    PointStruct,
+    Filter,
+    FieldCondition,
+    MatchValue,
+)
 from fastembed import TextEmbedding
 from loguru import logger
 from typing import Optional, List
 import hashlib
 import uuid
+
 
 class FastEmbedFunction:
     """Local embedding function using fastembed."""
@@ -28,7 +36,6 @@ class SemanticCache:
         self.embedding_fn = FastEmbedFunction()
         self.vector_size = 384  # all-MiniLM-L6-v2 dimension
 
-        # Connect to Qdrant Cloud
         qdrant_url = os.getenv("QDRANT_URL")
         qdrant_api_key = os.getenv("QDRANT_API_KEY")
 
@@ -40,7 +47,6 @@ class SemanticCache:
             api_key=qdrant_api_key,
         )
 
-        # Create collection if it does not exist
         self._ensure_collection()
         logger.info(f"Qdrant cache ready (collection: {collection_name})")
 
@@ -66,9 +72,9 @@ class SemanticCache:
         try:
             query_vector = self.embedding_fn.embed([query])[0]
 
-            results = self.client.search(
+            results = self.client.query_points(
                 collection_name=self.collection_name,
-                query_vector=query_vector,
+                query=query_vector,
                 query_filter=Filter(
                     must=[
                         FieldCondition(
@@ -78,15 +84,16 @@ class SemanticCache:
                     ]
                 ),
                 limit=1,
-                score_threshold=None,
-            )
+            ).points
 
             if not results:
                 logger.info("CACHE MISS (no entries for tenant)")
                 return None
 
             hit = results[0]
-            distance = 1.0 - hit.score  # Qdrant returns similarity; convert to cosine distance
+            # Qdrant cosine score: higher = more similar.
+            # Convert to cosine distance: lower = more similar.
+            distance = 1.0 - hit.score
 
             if distance <= self.threshold:
                 logger.info(f"CACHE HIT (distance={distance:.3f})")
