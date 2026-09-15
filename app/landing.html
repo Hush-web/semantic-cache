@@ -1,0 +1,756 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Semantic Cache Gateway — stop paying for the same LLM answer twice</title>
+<meta name="description" content="An OpenAI-compatible gateway that caches LLM responses by meaning, not exact text. Swap one URL, cut inference costs up to 70%.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg: #0a0a0f;
+    --bg-raised: #111117;
+    --surface: #14141c;
+    --border: #24242f;
+    --border-soft: #1a1a23;
+    --text: #edeef2;
+    --muted: #8c8fa0;
+    --muted-2: #63667a;
+    --accent: #35d493;
+    --accent-dim: #35d49322;
+    --accent-glow: #35d49355;
+    --danger-price: #ff8a65;
+    --mono: 'JetBrains Mono', ui-monospace, monospace;
+    --sans: 'Inter', -apple-system, sans-serif;
+  }
+
+  *{ box-sizing: border-box; margin: 0; padding: 0; }
+
+  html{ scroll-behavior: smooth; }
+
+  body{
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
+  }
+
+  body::before{
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+    background:
+      radial-gradient(680px 420px at 12% -8%, #35d49322, transparent 60%),
+      radial-gradient(600px 500px at 100% 10%, #3b82f61a, transparent 55%),
+      var(--bg);
+  }
+
+  a{ color: inherit; text-decoration: none; }
+  ul{ list-style: none; }
+
+  .wrap{
+    max-width: 1120px;
+    margin: 0 auto;
+    padding: 0 24px;
+  }
+
+  code, pre, .mono{ font-family: var(--mono); }
+
+  /* ---------- reveal-on-scroll ---------- */
+  .reveal{
+    opacity: 0;
+    transform: translateY(14px);
+    transition: opacity .6s ease, transform .6s ease;
+  }
+  .reveal.in{ opacity: 1; transform: translateY(0); }
+  @media (prefers-reduced-motion: reduce){
+    .reveal{ opacity: 1; transform: none; transition: none; }
+  }
+
+  /* ---------- nav ---------- */
+  header{
+    position: sticky;
+    top: 0;
+    z-index: 50;
+    backdrop-filter: blur(10px);
+    background: #0a0a0fcc;
+    border-bottom: 1px solid var(--border-soft);
+  }
+  nav{
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    height: 64px;
+  }
+  .brand{
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-weight: 700;
+    font-size: 15px;
+    letter-spacing: -0.01em;
+  }
+  .brand-mark{
+    width: 20px; height: 20px;
+    border-radius: 5px;
+    background: linear-gradient(135deg, var(--accent), #1f9d6f);
+    flex-shrink: 0;
+  }
+  .nav-links{
+    display: flex;
+    gap: 28px;
+    font-size: 14px;
+    color: var(--muted);
+  }
+  .nav-links a:hover{ color: var(--text); }
+  .nav-cta{
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text);
+    border: 1px solid var(--border);
+    padding: 8px 16px;
+    border-radius: 8px;
+    transition: border-color .2s ease;
+  }
+  .nav-cta:hover{ border-color: var(--accent); }
+  .nav-mobile-hide{ display: flex; }
+  @media (max-width: 760px){
+    .nav-mobile-hide{ display: none; }
+  }
+
+  /* ---------- buttons ---------- */
+  .btn{
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    font-family: var(--sans);
+    font-weight: 600;
+    font-size: 15px;
+    padding: 12px 22px;
+    border-radius: 9px;
+    border: 1px solid transparent;
+    cursor: pointer;
+    transition: transform .15s ease, box-shadow .2s ease, border-color .2s ease, background .2s ease;
+  }
+  .btn-primary{
+    background: var(--accent);
+    color: #04140d;
+  }
+  .btn-primary:hover{
+    box-shadow: 0 0 0 4px var(--accent-dim);
+  }
+  .btn-secondary{
+    background: transparent;
+    color: var(--text);
+    border-color: var(--border);
+  }
+  .btn-secondary:hover{ border-color: #3a3a48; }
+
+  /* ---------- hero ---------- */
+  .hero{
+    padding: 100px 0 80px;
+    text-align: center;
+  }
+  .kicker{
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    color: var(--muted);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    padding: 6px 14px;
+    border-radius: 100px;
+    margin-bottom: 28px;
+  }
+  .kicker-dot{
+    width: 6px; height: 6px; border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-dim);
+  }
+  h1{
+    font-size: clamp(2.3rem, 5vw, 3.6rem);
+    font-weight: 800;
+    letter-spacing: -0.03em;
+    line-height: 1.1;
+    max-width: 800px;
+    margin: 0 auto 22px;
+  }
+  h1 .accent-text{ color: var(--accent); }
+  .subhead{
+    font-size: 18px;
+    color: var(--muted);
+    max-width: 560px;
+    margin: 0 auto 36px;
+    line-height: 1.6;
+  }
+  .hero-ctas{
+    display: flex;
+    justify-content: center;
+    gap: 12px;
+    margin-bottom: 56px;
+    flex-wrap: wrap;
+  }
+
+  .code-window{
+    max-width: 660px;
+    margin: 0 auto;
+    text-align: left;
+    background: var(--bg-raised);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+    box-shadow: 0 30px 60px -30px #000a;
+  }
+  .code-titlebar{
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--border-soft);
+    background: #0e0e14;
+  }
+  .code-dots{ display: flex; gap: 6px; }
+  .code-dots span{ width: 10px; height: 10px; border-radius: 50%; background: #2a2a35; }
+  .code-filename{ font-size: 12px; color: var(--muted-2); font-family: var(--mono); }
+  .copy-btn{
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    font-family: var(--sans);
+    font-size: 12px;
+    padding: 5px 10px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: color .2s ease, border-color .2s ease;
+  }
+  .copy-btn:hover{ color: var(--text); border-color: #3a3a48; }
+  .copy-btn.copied{ color: var(--accent); border-color: var(--accent); }
+  .code-body{
+    padding: 20px;
+    font-size: 13.5px;
+    line-height: 1.75;
+    overflow-x: auto;
+    white-space: pre;
+  }
+  .tok-comment{ color: var(--muted-2); }
+  .tok-str{ color: #7ee0c0; }
+  .tok-kw{ color: #7aa2ff; }
+  .tok-prop{ color: #d6d8e0; }
+
+  /* ---------- section shell ---------- */
+  section{ padding: 96px 0; border-top: 1px solid var(--border-soft); }
+  .section-head{
+    max-width: 560px;
+    margin-bottom: 56px;
+  }
+  .section-head h2{
+    font-size: clamp(1.7rem, 3vw, 2.2rem);
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    margin-bottom: 12px;
+  }
+  .section-head p{
+    color: var(--muted);
+    font-size: 16px;
+    line-height: 1.6;
+  }
+
+  /* ---------- how it works ---------- */
+  .steps{
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 0;
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    overflow: hidden;
+  }
+  .step{
+    padding: 32px 28px;
+    border-right: 1px solid var(--border);
+    background: var(--surface);
+    position: relative;
+  }
+  .step:last-child{ border-right: none; }
+  .step-num{
+    font-family: var(--mono);
+    font-size: 13px;
+    color: var(--accent);
+    margin-bottom: 18px;
+    display: block;
+  }
+  .step h3{
+    font-size: 17px;
+    font-weight: 600;
+    margin-bottom: 10px;
+  }
+  .step p{ color: var(--muted); font-size: 14.5px; line-height: 1.6; }
+  @media (max-width: 760px){
+    .steps{ grid-template-columns: 1fr; }
+    .step{ border-right: none; border-bottom: 1px solid var(--border); }
+    .step:last-child{ border-bottom: none; }
+  }
+
+  /* ---------- byok cards ---------- */
+  .grid-4{
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 16px;
+  }
+  .grid-3{
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 16px;
+  }
+  .card{
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 26px 22px;
+  }
+  .card h3{ font-size: 15.5px; font-weight: 600; margin-bottom: 8px; }
+  .card p{ font-size: 14px; color: var(--muted); line-height: 1.6; }
+  .card-icon{
+    width: 34px; height: 34px;
+    border-radius: 8px;
+    background: var(--accent-dim);
+    display: flex; align-items: center; justify-content: center;
+    margin-bottom: 16px;
+    color: var(--accent);
+  }
+  @media (max-width: 900px){
+    .grid-4{ grid-template-columns: repeat(2, 1fr); }
+  }
+  @media (max-width: 560px){
+    .grid-4, .grid-3{ grid-template-columns: 1fr; }
+  }
+
+  /* ---------- demo ---------- */
+  .demo-panel{
+    background: var(--bg-raised);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 8px;
+  }
+  .demo-inner{
+    background: #0c0c11;
+    border-radius: 10px;
+    padding: 24px;
+  }
+  .demo-result{
+    margin-top: 18px;
+    padding-top: 18px;
+    border-top: 1px dashed var(--border);
+    font-size: 13px;
+    color: var(--muted);
+    display: flex;
+    gap: 22px;
+    flex-wrap: wrap;
+  }
+  .demo-result b{ color: var(--accent); font-family: var(--mono); font-weight: 600; }
+
+  /* ---------- features ---------- */
+  .features{
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 16px;
+  }
+  @media (max-width: 900px){ .features{ grid-template-columns: repeat(2,1fr); } }
+  @media (max-width: 560px){ .features{ grid-template-columns: 1fr; } }
+
+  /* ---------- pricing ---------- */
+  .pricing-grid{
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 16px;
+    align-items: stretch;
+  }
+  .plan{
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 28px 24px;
+    display: flex;
+    flex-direction: column;
+  }
+  .plan.highlight{
+    border-color: var(--accent);
+    background: linear-gradient(180deg, #35d49312, var(--surface) 40%);
+    position: relative;
+  }
+  .plan-tag{
+    position: absolute;
+    top: -11px; left: 24px;
+    background: var(--accent);
+    color: #04140d;
+    font-size: 11.5px;
+    font-weight: 700;
+    padding: 3px 10px;
+    border-radius: 100px;
+  }
+  .plan-name{ font-size: 14px; color: var(--muted); font-weight: 600; margin-bottom: 14px; }
+  .plan-price{ font-size: 34px; font-weight: 800; letter-spacing: -0.02em; margin-bottom: 4px; }
+  .plan-price span{ font-size: 14px; color: var(--muted); font-weight: 500; }
+  .plan-desc{ font-size: 13.5px; color: var(--muted); margin-bottom: 22px; }
+  .plan-features{ flex: 1; margin-bottom: 24px; }
+  .plan-features li{
+    font-size: 13.5px;
+    color: #c8cad4;
+    padding: 7px 0;
+    border-top: 1px solid var(--border-soft);
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+  }
+  .plan-features li:first-child{ border-top: none; }
+  .plan-features li::before{ content: "+"; color: var(--accent); font-family: var(--mono); }
+  .plan .btn{ width: 100%; }
+  @media (max-width: 900px){ .pricing-grid{ grid-template-columns: repeat(2,1fr); } }
+  @media (max-width: 560px){ .pricing-grid{ grid-template-columns: 1fr; } }
+
+  /* ---------- footer ---------- */
+  footer{
+    border-top: 1px solid var(--border-soft);
+    padding: 48px 0 40px;
+  }
+  .footer-row{
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 20px;
+  }
+  .footer-links{
+    display: flex;
+    gap: 24px;
+    font-size: 14px;
+    color: var(--muted);
+  }
+  .footer-links a:hover{ color: var(--text); }
+  .stack-note{
+    font-family: var(--mono);
+    font-size: 12.5px;
+    color: var(--muted-2);
+    margin-top: 24px;
+  }
+
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <nav>
+      <div class="brand">
+        <span class="brand-mark"></span>
+        Semantic Cache Gateway
+      </div>
+      <div class="nav-links nav-mobile-hide">
+        <a href="#how">How it works</a>
+        <a href="#features">Features</a>
+        <a href="#pricing">Pricing</a>
+        <a href="#demo">Live demo</a>
+      </div>
+      <a class="nav-cta" href="#pricing">Get your free API key</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+  <!-- HERO -->
+  <section class="hero" style="border-top:none; padding-top:100px;">
+    <div class="wrap">
+      <span class="kicker"><span class="kicker-dot"></span> OpenAI &amp; Groq compatible</span>
+      <h1>Stop paying your LLM twice for the <span class="accent-text">same question</span>.</h1>
+      <p class="subhead">Semantic Cache Gateway sits in front of your model calls and returns a cached answer when someone asks something close enough in meaning &mdash; not just exact text. One URL swap, up to 70% lower inference cost.</p>
+      <div class="hero-ctas">
+        <a href="#pricing" class="btn btn-primary">Get your free API key</a>
+        <a href="#demo" class="btn btn-secondary">Try the live demo</a>
+      </div>
+
+      <div class="code-window reveal">
+        <div class="code-titlebar">
+          <div class="code-dots"><span></span><span></span><span></span></div>
+          <span class="code-filename">client.py</span>
+          <button class="copy-btn" id="copyBtn">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+            <span id="copyLabel">Copy</span>
+          </button>
+        </div>
+        <div class="code-body" id="codeSnippet"><span class="tok-comment"># before: talking straight to OpenAI</span>
+<span class="tok-kw">from</span> openai <span class="tok-kw">import</span> OpenAI
+
+client = OpenAI(
+  base_url=<span class="tok-str">"https://api.semanticcache.dev/v1"</span>,  <span class="tok-comment"># ← only line that changed</span>
+  api_key=<span class="tok-str">"sk-your-openai-key"</span>,
+)
+
+response = client.chat.completions.create(
+  model=<span class="tok-str">"gpt-4o-mini"</span>,
+  messages=[{<span class="tok-prop">"role"</span>: <span class="tok-str">"user"</span>, <span class="tok-prop">"content"</span>: <span class="tok-str">"What's the capital of France?"</span>}],
+)</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- HOW IT WORKS -->
+  <section id="how">
+    <div class="wrap">
+      <div class="section-head reveal">
+        <h2>Three steps, no new SDK</h2>
+        <p>You keep your existing OpenAI or Groq client code. We change what happens to the request before it reaches the model.</p>
+      </div>
+      <div class="steps">
+        <div class="step reveal">
+          <span class="step-num">01</span>
+          <h3>Point your client at us</h3>
+          <p>Swap the base URL to ours. Everything else &mdash; model names, message format, streaming &mdash; stays exactly the same.</p>
+        </div>
+        <div class="step reveal">
+          <span class="step-num">02</span>
+          <h3>We cache by meaning</h3>
+          <p>Each prompt is embedded and compared against recent queries. Close enough in meaning, not just matching text, counts as a hit.</p>
+        </div>
+        <div class="step reveal">
+          <span class="step-num">03</span>
+          <h3>You pay less</h3>
+          <p>Cache hits skip the model call entirely. Misses pass straight through to your provider using your own key, unmodified.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- WHY BYOK -->
+  <section id="byok">
+    <div class="wrap">
+      <div class="section-head reveal">
+        <h2>Why you bring your own key</h2>
+        <p>We route requests. We never become the thing standing between you and your model bill.</p>
+      </div>
+      <div class="grid-4">
+        <div class="card reveal">
+          <div class="card-icon">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="10" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+          </div>
+          <h3>You stay billed directly</h3>
+          <p>Cache misses hit OpenAI or Groq on your account. No markup, no reselling tokens, no surprise invoice from us.</p>
+        </div>
+        <div class="card reveal">
+          <div class="card-icon">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l8 4v6c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V6l8-4z"/></svg>
+          </div>
+          <h3>Nothing to migrate off</h3>
+          <p>Remove us tomorrow by changing one line back. Your account, quota, and rate limits were never touched.</p>
+        </div>
+        <div class="card reveal">
+          <div class="card-icon">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+          </div>
+          <h3>Your terms with the provider</h3>
+          <p>Data retention, fine-tuning opt-outs, enterprise agreements &mdash; whatever you negotiated with OpenAI still applies.</p>
+        </div>
+        <div class="card reveal">
+          <div class="card-icon">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>
+          </div>
+          <h3>No cold-start trust problem</h3>
+          <p>We're a routing layer, not a model reseller. There's less to take on faith before you send your first request.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- LIVE DEMO -->
+  <section id="demo">
+    <div class="wrap">
+      <div class="section-head reveal">
+        <h2>Try it before you sign up</h2>
+        <p>This request runs against a shared demo key with a low rate limit &mdash; enough to see a cache hit happen in real time.</p>
+      </div>
+      <div class="demo-panel reveal">
+        <div class="demo-inner">
+          <div class="code-body" style="padding:0;">curl https://api.semanticcache.dev/v1/chat/completions \
+  -H <span class="tok-str">"Authorization: Bearer demo_key"</span> \
+  -H <span class="tok-str">"Content-Type: application/json"</span> \
+  -d <span class="tok-str">'{
+    "model": "llama-3.1-8b-instant",
+    "messages": [{"role": "user", "content": "capital of France?"}]
+  }'</span></div>
+          <div class="demo-result">
+            <span>Status: <b>200 OK</b></span>
+            <span>Cache: <b>HIT</b></span>
+            <span>Similarity: <b>0.94</b></span>
+            <span>Latency: <b>38ms</b></span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- FEATURES -->
+  <section id="features">
+    <div class="wrap">
+      <div class="section-head reveal">
+        <h2>What's actually running under the URL</h2>
+        <p>A gateway, an embedding model, and a vector store, wired together so you don't have to.</p>
+      </div>
+      <div class="features">
+        <div class="card reveal">
+          <h3>Semantic matching</h3>
+          <p>Queries are compared by meaning using sentence embeddings, so paraphrased questions still hit the cache.</p>
+        </div>
+        <div class="card reveal">
+          <h3>Multi-provider</h3>
+          <p>Works with OpenAI and Groq today, using the same request format your client already sends.</p>
+        </div>
+        <div class="card reveal">
+          <h3>Persistent storage</h3>
+          <p>Cached responses survive restarts and deploys &mdash; nothing resets when your gateway process does.</p>
+        </div>
+        <div class="card reveal">
+          <h3>Per-tenant usage</h3>
+          <p>Every API key tracks its own request count, hit rate, and spend independently of everyone else's traffic.</p>
+        </div>
+        <div class="card reveal">
+          <h3>Stats endpoint</h3>
+          <p>Pull hit rate, latency, and estimated savings as JSON &mdash; wire it into your own dashboard if you want to.</p>
+        </div>
+        <div class="card reveal">
+          <h3>OpenAI-compatible</h3>
+          <p>Same request and response shape as the OpenAI SDK, so existing tooling and libraries keep working.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- PRICING -->
+  <section id="pricing">
+    <div class="wrap">
+      <div class="section-head reveal">
+        <h2>Pricing that scales with requests, not seats</h2>
+        <p>Every plan includes the full cache engine. You're paying for request volume and retention window, nothing else.</p>
+      </div>
+      <div class="pricing-grid">
+        <div class="plan reveal">
+          <div class="plan-name">Free</div>
+          <div class="plan-price">$0</div>
+          <div class="plan-desc">For testing the gateway against a real project.</div>
+          <ul class="plan-features">
+            <li>1,000 requests / month</li>
+            <li>Semantic cache, all providers</li>
+            <li>7-day cache retention</li>
+            <li>Community support</li>
+          </ul>
+          <a href="#" class="btn btn-secondary">Get your free API key</a>
+        </div>
+        <div class="plan reveal">
+          <div class="plan-name">Starter</div>
+          <div class="plan-price">$19<span>/mo</span></div>
+          <div class="plan-desc">For a side project that's starting to see real traffic.</div>
+          <ul class="plan-features">
+            <li>50,000 requests / month</li>
+            <li>30-day cache retention</li>
+            <li>Usage stats endpoint</li>
+            <li>Email support</li>
+          </ul>
+          <a href="#" class="btn btn-secondary">Start on Starter</a>
+        </div>
+        <div class="plan highlight reveal">
+          <span class="plan-tag">Most popular</span>
+          <div class="plan-name">Pro</div>
+          <div class="plan-price">$49<span>/mo</span></div>
+          <div class="plan-desc">For a product with paying users and a real LLM bill.</div>
+          <ul class="plan-features">
+            <li>300,000 requests / month</li>
+            <li>90-day cache retention</li>
+            <li>Per-tenant usage breakdown</li>
+            <li>Priority support</li>
+          </ul>
+          <a href="#" class="btn btn-primary">Start on Pro</a>
+        </div>
+        <div class="plan reveal">
+          <div class="plan-name">Business</div>
+          <div class="plan-price">$149<span>/mo</span></div>
+          <div class="plan-desc">For teams running several products through one gateway.</div>
+          <ul class="plan-features">
+            <li>2,000,000 requests / month</li>
+            <li>Unlimited cache retention</li>
+            <li>Multiple team API keys</li>
+            <li>Direct support channel</li>
+          </ul>
+          <a href="#" class="btn btn-secondary">Talk to us</a>
+        </div>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <div class="footer-row">
+      <div class="brand">
+        <span class="brand-mark"></span>
+        Semantic Cache Gateway
+      </div>
+      <div class="footer-links">
+        <a href="#">GitHub</a>
+        <a href="#">Docs</a>
+        <a href="#pricing">Pricing</a>
+        <a href="#demo">Live demo</a>
+      </div>
+    </div>
+    <div class="stack-note">Built with FastAPI, Qdrant, Fastembed, and Groq.</div>
+  </div>
+</footer>
+
+<script>
+  // copy to clipboard
+  const copyBtn = document.getElementById('copyBtn');
+  const copyLabel = document.getElementById('copyLabel');
+  const codeSnippet = document.getElementById('codeSnippet');
+
+  copyBtn.addEventListener('click', async () => {
+    const text = codeSnippet.innerText;
+    try {
+      await navigator.clipboard.writeText(text);
+      copyBtn.classList.add('copied');
+      copyLabel.textContent = 'Copied';
+      setTimeout(() => {
+        copyBtn.classList.remove('copied');
+        copyLabel.textContent = 'Copy';
+      }, 1800);
+    } catch (e) {
+      copyLabel.textContent = 'Press Cmd/Ctrl+C';
+    }
+  });
+
+  // scroll reveal
+  const revealEls = document.querySelectorAll('.reveal');
+  if ('IntersectionObserver' in window) {
+    const io = new IntersectionObserver((entries) => {
+      entries.forEach(entry => {
+        if (entry.isIntersecting) {
+          entry.target.classList.add('in');
+          io.unobserve(entry.target);
+        }
+      });
+    }, { threshold: 0.12, rootMargin: '0px 0px -40px 0px' });
+    revealEls.forEach(el => io.observe(el));
+  } else {
+    revealEls.forEach(el => el.classList.add('in'));
+  }
+</script>
+
+</body>
+</html>
