@@ -6,6 +6,6 @@ pydantic>=2.9.0
 loguru
 groq
 openai
-chromadb
+qdrant-client
 fastembed
 onnxruntime
