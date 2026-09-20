@@ -1,8 +1,9 @@
 from loguru import logger
 from typing import Dict, Any
-from datetime import datetime
+from datetime import datetime, timezone
 import json
 import os
+
 
 class UsageTracker:
     """Track per-tenant usage and savings."""
@@ -11,6 +12,10 @@ class UsageTracker:
         self.storage_path = storage_path
         self.usage: Dict[str, Dict[str, Any]] = {}
         self.load()
+
+    def _now(self) -> str:
+        """Return current UTC time as ISO string."""
+        return datetime.now(timezone.utc).isoformat()
 
     def load(self):
         try:
@@ -38,8 +43,8 @@ class UsageTracker:
                 "cache_misses": 0,
                 "tokens_saved": 0,
                 "cost_saved_usd": 0.0,
-                "first_seen": datetime.utcnow().isoformat(),
-                "last_seen": datetime.utcnow().isoformat()
+                "first_seen": self._now(),
+                "last_seen": self._now(),
             }
         return self.usage[tenant_id]
 
@@ -49,14 +54,14 @@ class UsageTracker:
         t["cache_hits"] += 1
         t["tokens_saved"] += tokens_saved
         t["cost_saved_usd"] += (tokens_saved / 1000) * cost_per_1k
-        t["last_seen"] = datetime.utcnow().isoformat()
+        t["last_seen"] = self._now()
         self.save()
 
     def record_miss(self, tenant_id: str):
         t = self._get_tenant(tenant_id)
         t["total_requests"] += 1
         t["cache_misses"] += 1
-        t["last_seen"] = datetime.utcnow().isoformat()
+        t["last_seen"] = self._now()
         self.save()
 
     def get_stats(self, tenant_id: str) -> Dict[str, Any]:
@@ -76,7 +81,7 @@ class UsageTracker:
             "tokens_saved": t["tokens_saved"],
             "cost_saved_usd": round(t["cost_saved_usd"], 4),
             "first_seen": t["first_seen"],
-            "last_seen": t["last_seen"]
+            "last_seen": t["last_seen"],
         }
 
     def get_all_stats(self) -> Dict[str, Any]:
