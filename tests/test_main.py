@@ -9,9 +9,10 @@ import app.main as main_module
 @pytest.fixture
 def client():
     """TestClient with cache and router replaced by mocks."""
-    # Cache: default is a MISS, store is no-op, count is 0
+    # Cache: default is a MISS for both exact and semantic
     main_module.cache = MagicMock()
     main_module.cache.check.return_value = None
+    main_module.cache.check_exact.return_value = None
     main_module.cache.store.return_value = None
     main_module.cache.count.return_value = 0
 
@@ -43,7 +44,7 @@ def client():
 def test_root_serves_landing_page(client):
     r = client.get("/")
     assert r.status_code == 200
-    assert "Semantic Cache Gateway" in r.text
+    assert "Semantic Cache" in r.text
 
 
 def test_health(client):
@@ -79,6 +80,7 @@ def test_missing_messages_returns_400(client):
 
 
 def test_cache_miss_without_upstream_key_returns_402(client):
+    # Both exact and semantic return None (already set in fixture)
     r = client.post(
         "/v1/chat/completions",
         headers={"Authorization": "Bearer test_key"},
@@ -106,11 +108,13 @@ def test_cache_miss_with_upstream_key_returns_200(client):
 
 
 def test_cache_hit_returns_200_and_hit_header(client):
-    # Force a cache hit
+    # Force a semantic cache hit (exact misses, semantic hits)
+    main_module.cache.check_exact.return_value = None
     main_module.cache.check.return_value = {
         "response": "4",
         "distance": 0.0,
         "cached_query": "What is 2+2?",
+        "cache_type": "SEMANTIC",
     }
 
     r = client.post(
@@ -120,6 +124,27 @@ def test_cache_hit_returns_200_and_hit_header(client):
     )
     assert r.status_code == 200
     assert r.headers["x-cache"] == "HIT"
+    assert r.headers["x-cache-type"] == "SEMANTIC"
+    assert r.json()["choices"][0]["message"]["content"] == "4"
+
+
+def test_exact_cache_hit_returns_exact_type(client):
+    # Force an exact cache hit
+    main_module.cache.check_exact.return_value = {
+        "response": "4",
+        "distance": 0.0,
+        "cached_query": "What is 2+2?",
+        "cache_type": "EXACT",
+    }
+
+    r = client.post(
+        "/v1/chat/completions",
+        headers={"Authorization": "Bearer test_key"},
+        json={"messages": [{"role": "user", "content": "What is 2+2?"}]},
+    )
+    assert r.status_code == 200
+    assert r.headers["x-cache"] == "HIT"
+    assert r.headers["x-cache-type"] == "EXACT"
     assert r.json()["choices"][0]["message"]["content"] == "4"
 
 
