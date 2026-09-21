@@ -2,56 +2,58 @@ import re
 from typing import Dict, List
 
 
-# Known injection patterns (lowercase matching)
+# Injection patterns as regex (case-insensitive matching handled below)
 INJECTION_PATTERNS: List[str] = [
     # Instruction override
-    "ignore previous instructions",
-    "ignore all previous",
-    "ignore the above",
-    "disregard all rules",
-    "disregard previous",
-    "forget your instructions",
-    "forget all previous",
-    "override your instructions",
+    r"ignore\s+(all\s+)?previous\s+instructions",
+    r"ignore\s+the\s+above",
+    r"disregard\s+(all\s+)?(previous|prior|earlier)",
+    r"forget\s+(all\s+)?(previous|prior|earlier|your)",
+    r"override\s+your\s+instructions",
 
     # System prompt extraction
-    "repeat your system prompt",
-    "what were your instructions",
-    "reveal your prompt",
-    "show me your system",
-    "print your instructions",
-    "what is your system prompt",
+    r"(reveal|show|print|repeat|display)\s+(me\s+)?(your|the)\s+(system\s+)?(prompt|instructions)",
+    r"what\s+(were|are)\s+your\s+instructions",
+    r"what\s+is\s+your\s+system\s+prompt",
 
     # Role hijacking
-    "you are now",
-    "act as if you have no restrictions",
-    "pretend you are",
-    "from now on you are",
-    "new persona",
+    r"you\s+are\s+now\s+",
+    r"act\s+as\s+if\s+you\s+(have\s+no|are\s+not)",
+    r"pretend\s+(you\s+are|to\s+be)",
+    r"from\s+now\s+on\s+you\s+are",
+    r"new\s+persona",
 
     # Tool manipulation
-    "call the delete function",
-    "execute this code",
-    "run this command",
+    r"call\s+the\s+delete\s+function",
+    r"execute\s+this\s+code",
+    r"run\s+this\s+command",
 ]
 
 
-# Suspicious patterns that are not always attacks but deserve flagging
 SUSPICIOUS_PATTERNS: List[str] = [
-    "base64",
-    "eval(",
-    "exec(",
-    "system(",
-    "<script",
-    "javascript:",
+    r"base64",
+    r"eval\(",
+    r"exec\(",
+    r"system\(",
+    r"<script",
+    r"javascript:",
 ]
+
+
+def _count_matches(text: str, patterns: List[str]) -> List[str]:
+    """Return all patterns that match the text."""
+    matches = []
+    for pattern in patterns:
+        if re.search(pattern, text, re.IGNORECASE):
+            matches.append(pattern)
+    return matches
 
 
 def scan_input(text: str) -> Dict:
     """
     Scan a prompt for injection and suspicious patterns.
 
-    Returns a dict with:
+    Returns:
         score: 0-100 risk score
         blocked: True if score >= 75
         flagged: True if score > 0
@@ -67,29 +69,11 @@ def scan_input(text: str) -> Dict:
             "category": "clean",
         }
 
-    text_lower = text.lower()
-    matches: List[str] = []
+    injection_hits = _count_matches(text, INJECTION_PATTERNS)
+    suspicious_hits = _count_matches(text, SUSPICIOUS_PATTERNS)
 
-    # Check exact injection patterns
-    for pattern in INJECTION_PATTERNS:
-        if pattern in text_lower:
-            matches.append(pattern)
-
-    # Check suspicious patterns (lower weight)
-    for pattern in SUSPICIOUS_PATTERNS:
-        if pattern in text_lower:
-            matches.append(f"suspicious:{pattern}")
-
-    # Calculate score
-    # Injection patterns: 25 points each
-    # Suspicious patterns: 10 points each
-    injection_hits = [m for m in matches if not m.startswith("suspicious:")]
-    suspicious_hits = [m for m in matches if m.startswith("suspicious:")]
-
-    score = min(
-        len(injection_hits) * 25 + len(suspicious_hits) * 10,
-        100,
-    )
+    # Score: 40 per injection, 10 per suspicious
+    score = min(len(injection_hits) * 40 + len(suspicious_hits) * 10, 100)
 
     blocked = score >= 75
     flagged = score > 0
@@ -105,7 +89,7 @@ def scan_input(text: str) -> Dict:
         "score": score,
         "blocked": blocked,
         "flagged": flagged,
-        "matches": matches,
+        "matches": injection_hits + [f"suspicious:{p}" for p in suspicious_hits],
         "category": category,
     }
 
